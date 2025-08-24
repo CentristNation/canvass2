@@ -273,11 +273,6 @@
         <div><i class="fas fa-clock"></i> Time: <span id="timeInArea">0</span>s</div>
     </div>
 
-    <!-- GPS Status Indicator -->
-    <div class="gps-status warning field-only" id="gpsStatus">
-        <i class="fas fa-satellite-dish"></i> <span id="gpsStatusText">Tap to enable GPS</span>
-    </div>
-
     <div class="container-fluid">
         <!-- =========================== FIELD DASHBOARD =========================== -->
         <div class="field-only">
@@ -382,9 +377,9 @@
                     </div>
                     <div class="card-body">
                         <!-- Location Validation -->
-                        <div id="proximityAlert" class="proximity-warning" style="display: none;">
+                        <div id="locationValidation" class="proximity-warning" style="display: none;">
                             <i class="fas fa-exclamation-triangle"></i>
-                            <span id="proximityMessage">You must be within 20 meters of the voter address to complete this form.</span>
+                            <strong>Location Required:</strong> You must be within 20 meters of the voter address to complete this form.
                         </div>
 
                         <form id="notesForm">
@@ -862,21 +857,6 @@
         let markers = {};
         let canvasserMarker = null;
         let isDashboardField = true;
-        
-        // Location tracking variables
-        let isLocationSharingActive = false;
-        let proximityCheckInterval = null;
-        let locationValidationStatus = false;
-        let currentAccuracy = null;
-        let lastLocationUpdate = null;
-        let startTrackingTime = null;
-        let locationPath = [];
-        let locationLog = [];
-        let totalPathDistance = 0;
-        
-        // Constants
-        const PROXIMITY_THRESHOLD = 20; // 20 meters
-        const TARGET_CENTER = { lat: 33.17854842488629, lng: -96.78402904191564 };
 
         // Simulated canvassers for admin view
         let canvassers = [
@@ -906,10 +886,9 @@
             updateCounts();
             updateCanvasserTracking();
             updateFieldAssignmentInfo();
-            initializeGPSStatus();
             
-            // Request location permission when app loads
-            requestLocationPermission();
+            // Check if location services are available but don't auto-request
+            checkLocationSupport();
             
             // Initialize some demo assignments for testing
             setTimeout(() => {
@@ -917,59 +896,100 @@
             }, 500);
         });
 
-        // Request location permission on app load
-        function requestLocationPermission() {
+        // Check if geolocation is supported
+        function checkLocationSupport() {
             if (!navigator.geolocation) {
-                showLocationNotSupportedAlert();
+                updateGPSStatus('GPS not supported on this device', 'error');
+                document.getElementById('locationPermissionAlert').innerHTML = `
+                    <h6><i class="fas fa-exclamation-triangle"></i> GPS Not Supported</h6>
+                    <p class="mb-0">Your device doesn't support GPS. Canvassing features will be limited.</p>
+                `;
+            } else {
+                updateGPSStatus('GPS available - Click Enable Location to start', 'warning');
+            }
+        }
+
+        // Enable location services - triggered by user button click
+        function enableLocationServices() {
+            updateGPSStatus('Requesting location permission...', 'warning');
+            
+            if (!navigator.geolocation) {
+                showNotification('GPS is not supported on this device', 'error');
                 return;
             }
 
-            // Show location permission request modal
-            showLocationPermissionModal();
+            // Request location permission with user interaction
+            navigator.geolocation.getCurrentPosition(
+                function(position) {
+                    // Success - location permission granted
+                    canvasserLocation = {
+                        lat: position.coords.latitude,
+                        lng: position.coords.longitude,
+                        accuracy: position.coords.accuracy,
+                        timestamp: new Date()
+                    };
+                    
+                    onLocationPermissionGranted();
+                },
+                function(error) {
+                    handleLocationError(error);
+                },
+                {
+                    enableHighAccuracy: true,
+                    timeout: 15000,
+                    maximumAge: 0
+                }
+            );
         }
 
-        function showLocationNotSupportedAlert() {
-            const alertHtml = `
-                <div class="alert alert-danger alert-dismissible fade show position-fixed" 
-                     style="top: 70px; left: 20px; right: 20px; z-index: 1050;">
-                    <h6><i class="fas fa-exclamation-triangle"></i> GPS Not Supported</h6>
-                    <p class="mb-0">Your device doesn't support GPS. Canvassing features will be limited.</p>
-                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                </div>
-            `;
-            document.body.insertAdjacentHTML('beforeend', alertHtml);
+        function onLocationPermissionGranted() {
+            // Hide permission alert
+            document.getElementById('locationPermissionAlert').style.display = 'none';
+            
+            // Show location sharing card
+            document.getElementById('locationSharingCard').style.display = 'block';
+            
+            // Update status
+            updateGPSStatus(`Location enabled (${Math.round(canvasserLocation.accuracy)}m accuracy)`, 'good');
+            updateLocationSharingStatus('Location permission granted - Ready to track');
+            
+            // Show success message
+            showNotification('Location services enabled! You can now start canvassing.', 'success');
+            
+            // Enable the tracking button
+            const trackingBtn = document.getElementById('trackingBtn');
+            trackingBtn.disabled = false;
+            trackingBtn.innerHTML = '<i class="fas fa-play"></i><br><small>Start Tracking</small>';
+            
+            // Update canvasser marker on map
+            updateCanvasserMarker();
         }
 
         function showLocationPermissionModal() {
+            // Check if modal already exists to avoid duplicates
+            if (document.getElementById('locationPermissionModal')) {
+                return;
+            }
+            
             const modalHtml = `
                 <div class="modal fade" id="locationPermissionModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
                     <div class="modal-dialog modal-dialog-centered">
                         <div class="modal-content">
-                            <div class="modal-header bg-primary text-white">
-                                <h5 class="modal-title"><i class="fas fa-map-marker-alt"></i> Location Access Required</h5>
+                            <div class="modal-header bg-warning text-dark">
+                                <h5 class="modal-title"><i class="fas fa-exclamation-triangle"></i> Location Access Required</h5>
                             </div>
                             <div class="modal-body text-center">
-                                <div class="mb-3">
-                                    <i class="fas fa-location-arrow fa-3x text-primary mb-3"></i>
-                                </div>
-                                <h6>This canvassing app needs access to your location to:</h6>
-                                <ul class="list-unstyled text-start mt-3">
-                                    <li class="mb-2"><i class="fas fa-check-circle text-success me-2"></i> Verify you're at voter addresses</li>
-                                    <li class="mb-2"><i class="fas fa-route text-info me-2"></i> Track your canvassing route</li>
-                                    <li class="mb-2"><i class="fas fa-shield-alt text-warning me-2"></i> Ensure visit authenticity</li>
-                                    <li class="mb-2"><i class="fas fa-map text-primary me-2"></i> Show nearby voters on the map</li>
+                                <p><strong>This canvassing app requires location access to:</strong></p>
+                                <ul class="list-unstyled">
+                                    <li><i class="fas fa-map-marker-alt text-primary"></i> Verify you're at voter addresses</li>
+                                    <li><i class="fas fa-route text-success"></i> Track your canvassing route</li>
+                                    <li><i class="fas fa-shield-alt text-info"></i> Ensure visit authenticity</li>
                                 </ul>
-                                <div class="alert alert-info mt-3">
-                                    <small><i class="fas fa-info-circle"></i> Your location data is only used during canvassing and is not stored permanently.</small>
-                                </div>
+                                <p class="text-muted">Please enable location access in your browser settings and try again.</p>
                             </div>
                             <div class="modal-footer">
-                                <button type="button" class="btn btn-success" onclick="enableLocationServices()">
-                                    <i class="fas fa-unlock"></i> Allow Location Access
-                                </button>
-                                <button type="button" class="btn btn-outline-secondary" onclick="closeLocationModal()">
-                                    Continue Without GPS
-                                </button>
+                                <button type="button" class="btn btn-primary" onclick="requestLocationPermissionAgain()">Try Again</button>
+                                <button type="button" class="btn btn-outline-secondary" onclick="window.location.reload()">Refresh Page</button>
                             </div>
                         </div>
                     </div>
@@ -979,19 +999,6 @@
             document.body.insertAdjacentHTML('beforeend', modalHtml);
             const modal = new bootstrap.Modal(document.getElementById('locationPermissionModal'));
             modal.show();
-        }
-
-        function closeLocationModal() {
-            const modal = bootstrap.Modal.getInstance(document.getElementById('locationPermissionModal'));
-            if (modal) {
-                modal.hide();
-            }
-            const modalElement = document.getElementById('locationPermissionModal');
-            if (modalElement) {
-                modalElement.remove();
-            }
-            
-            showNotification('App will work with limited features without GPS', 'warning');
         }
 
         function requestLocationPermissionAgain() {
@@ -1009,131 +1016,6 @@
             
             // Try requesting permission again
             requestLocationPermission();
-        }
-
-        // Enable location services - triggered by user button click
-        function enableLocationServices() {
-            if (!navigator.geolocation) {
-                showNotification('GPS is not supported on this device', 'error');
-                closeLocationModal();
-                return;
-            }
-
-            // Close the permission modal first
-            closeLocationModal();
-            
-            // Show loading status
-            showNotification('Requesting location permission...', 'info');
-
-            // Request location permission with user interaction
-            navigator.geolocation.getCurrentPosition(
-                function(position) {
-                    // Success - location permission granted
-                    canvasserLocation = {
-                        lat: position.coords.latitude,
-                        lng: position.coords.longitude,
-                        accuracy: position.coords.accuracy,
-                        timestamp: new Date()
-                    };
-                    
-                    onLocationPermissionGranted();
-                },
-                function(error) {
-                    handleLocationError(error);
-                    // Show permission error modal
-                    showLocationErrorModal(error);
-                },
-                {
-                    enableHighAccuracy: true,
-                    timeout: 15000,
-                    maximumAge: 0
-                }
-            );
-        }
-
-        function onLocationPermissionGranted() {
-            currentAccuracy = canvasserLocation.accuracy;
-            
-            // Update GPS status
-            updateGPSStatus(`GPS enabled (${Math.round(canvasserLocation.accuracy)}m accuracy)`, 'good');
-            
-            // Show success message
-            showNotification('Location access granted! Ready to start canvassing.', 'success');
-            
-            // Enable the tracking button
-            const trackingBtn = document.getElementById('trackingBtn');
-            if (trackingBtn) {
-                trackingBtn.disabled = false;
-                trackingBtn.innerHTML = '<i class="fas fa-play"></i><br><small>Start Tracking</small>';
-            }
-            
-            // Update canvasser marker on map
-            updateCanvasserMarker();
-            
-            // Center map on user's location
-            map.setView([canvasserLocation.lat, canvasserLocation.lng], 16);
-            
-            // If a voter is already selected, check proximity
-            if (currentVoter) {
-                checkProximityToCurrentVoter();
-            }
-        }
-
-        function showLocationErrorModal(error) {
-            let errorMessage = 'Unable to access your location. ';
-            let errorDetails = '';
-            
-            switch(error.code) {
-                case error.PERMISSION_DENIED:
-                    errorMessage += 'Permission was denied.';
-                    errorDetails = 'Please enable location access in your browser settings and try again.';
-                    break;
-                case error.POSITION_UNAVAILABLE:
-                    errorMessage += 'Location information is unavailable.';
-                    errorDetails = 'Please check your GPS settings and try again.';
-                    break;
-                case error.TIMEOUT:
-                    errorMessage += 'Location request timed out.';
-                    errorDetails = 'Please try again or check your GPS settings.';
-                    break;
-                default:
-                    errorMessage += 'An unknown error occurred.';
-                    errorDetails = 'Please try refreshing the page.';
-                    break;
-            }
-            
-            const modalHtml = `
-                <div class="modal fade" id="locationErrorModal" tabindex="-1">
-                    <div class="modal-dialog modal-dialog-centered">
-                        <div class="modal-content">
-                            <div class="modal-header bg-warning text-dark">
-                                <h5 class="modal-title"><i class="fas fa-exclamation-triangle"></i> Location Access Error</h5>
-                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                            </div>
-                            <div class="modal-body">
-                                <p><strong>${errorMessage}</strong></p>
-                                <p>${errorDetails}</p>
-                                <div class="alert alert-info">
-                                    <small><i class="fas fa-info-circle"></i> The app can still function without GPS, but some features like proximity validation will not be available.</small>
-                                </div>
-                            </div>
-                            <div class="modal-footer">
-                                <button type="button" class="btn btn-primary" onclick="enableLocationServices()">Try Again</button>
-                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Continue Without GPS</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            document.body.insertAdjacentHTML('beforeend', modalHtml);
-            const modal = new bootstrap.Modal(document.getElementById('locationErrorModal'));
-            modal.show();
-            
-            // Clean up modal after it's hidden
-            document.getElementById('locationErrorModal').addEventListener('hidden.bs.modal', function() {
-                this.remove();
-            });
         }
 
         // Create demo assignments for testing
@@ -1178,6 +1060,7 @@
             locationLog = [];
             totalPathDistance = 0;
 
+            updateLocationSharingStatus('Location tracking active');
             updateGPSStatus('Tracking active', 'good');
             
             const trackingBtn = document.getElementById('trackingBtn');
@@ -1217,6 +1100,7 @@
                 proximityCheckInterval = null;
             }
 
+            updateLocationSharingStatus('Location tracking stopped');
             updateGPSStatus('Tracking stopped', 'warning');
             
             const trackingBtn = document.getElementById('trackingBtn');
@@ -1264,6 +1148,9 @@
                         timestamp: newLocation.timestamp,
                         accuracy: newLocation.accuracy
                     });
+                    
+                    // Update path distance display
+                    document.getElementById('pathDistance').textContent = totalPathDistance.toFixed(2);
                 }
             }
 
@@ -1304,32 +1191,10 @@
             }
             
             showNotification(errorMessage, 'error');
-        }
-
-        function updateGPSStatus(message, status) {
-            const gpsStatus = document.getElementById('gpsStatus');
-            const gpsStatusText = document.getElementById('gpsStatusText');
             
-            if (gpsStatus && gpsStatusText) {
-                gpsStatusText.textContent = message;
-                gpsStatus.className = `gps-status ${status} field-only`;
-                
-                // Make GPS status clickable if not enabled
-                if (status === 'warning' && !canvasserLocation) {
-                    gpsStatus.style.cursor = 'pointer';
-                    gpsStatus.onclick = function() {
-                        enableLocationServices();
-                    };
-                } else {
-                    gpsStatus.style.cursor = 'default';
-                    gpsStatus.onclick = null;
-                }
+            if (error.code === error.PERMISSION_DENIED) {
+                updateLocationSharingStatus('Location access required for canvassing');
             }
-        }
-
-        // Initialize GPS status
-        function initializeGPSStatus() {
-            updateGPSStatus('Tap to enable GPS', 'warning');
         }
 
         function checkProximityToCurrentVoter() {
@@ -1352,7 +1217,7 @@
                 locationValidationStatus = true;
                 proximityAlert.className = 'proximity-good';
                 proximityAlert.style.display = 'block';
-                proximityMessage.innerHTML = `<i class="fas fa-check-circle"></i> You are ${Math.round(distance)}m from ${currentVoter.name}'s address. Form enabled.`;
+                proximityMessage.textContent = `You are ${Math.round(distance)}m from ${currentVoter.name}'s address. Form enabled.`;
                 
                 // Log time at this location
                 logTimeAtLocation(currentVoter, distance);
@@ -1362,7 +1227,7 @@
                 locationValidationStatus = false;
                 proximityAlert.className = 'proximity-warning';
                 proximityAlert.style.display = 'block';
-                proximityMessage.innerHTML = `<i class="fas fa-exclamation-triangle"></i> You are ${Math.round(distance)}m from ${currentVoter.name}'s address. Move within 20m to enable form.`;
+                proximityMessage.textContent = `You are ${Math.round(distance)}m from ${currentVoter.name}'s address. Move within 20m to enable form.`;
             }
 
             updateFormValidation();
@@ -1385,19 +1250,38 @@
 
         function updateFormValidation() {
             const submitBtn = document.getElementById('submitBtn');
-            const proximityAlert = document.getElementById('proximityAlert');
+            const locationValidation = document.getElementById('locationValidation');
 
             if (locationValidationStatus && currentVoter) {
                 submitBtn.disabled = false;
                 submitBtn.className = 'btn btn-success w-100';
-                submitBtn.innerHTML = '<i class="fas fa-save"></i> Complete Visit';
+                locationValidation.style.display = 'none';
             } else {
                 submitBtn.disabled = true;
                 submitBtn.className = 'btn btn-secondary w-100';
-                submitBtn.innerHTML = '<i class="fas fa-lock"></i> Location Required';
-                if (currentVoter && !proximityAlert.style.display) {
-                    proximityAlert.style.display = 'block';
+                if (currentVoter) {
+                    locationValidation.style.display = 'block';
                 }
+            }
+        }
+
+        function updateGPSStatus(message, status) {
+            const gpsStatus = document.getElementById('gpsStatus');
+            const gpsStatusText = document.getElementById('gpsStatusText');
+            
+            gpsStatusText.textContent = message;
+            gpsStatus.className = `gps-status ${status}`;
+        }
+
+        function updateLocationSharingStatus(message) {
+            document.getElementById('locationSharingStatus').textContent = message;
+        }
+
+        function toggleLocationSharing() {
+            if (isLocationSharingActive) {
+                stopLocationTracking();
+            } else {
+                startLocationTracking();
             }
         }
 
@@ -1570,11 +1454,14 @@ ${voterPlacemarks}
                 log: locationLog
             };
             
-            // Store in demo data (note: localStorage not used in artifacts)
+            // Store in localStorage for admin access (note: this is for demo purposes)
             try {
-                console.log('Session data saved:', sessionData);
+                const existingSessions = JSON.parse(localStorage.getItem('canvassing-sessions') || '[]');
+                existingSessions.push(sessionData);
+                localStorage.setItem('canvassing-sessions', JSON.stringify(existingSessions));
             } catch (error) {
-                console.log('Could not save session data:', error);
+                console.log('Could not save to localStorage:', error);
+                // In a real app, this would be sent to a server
             }
         }
 
@@ -1615,14 +1502,14 @@ ${voterPlacemarks}
 
         // Initialize Leaflet map
         function initializeMap() {
-            map = L.map('map').setView([TARGET_CENTER.lat, TARGET_CENTER.lng], 15);
+            map = L.map('map').setView([33.1507, -96.8236], 13);
             
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 attribution: '© OpenStreetMap contributors'
             }).addTo(map);
         }
 
-        // Generate demo voter data centered around the target coordinates
+        // Generate demo voter data
         function generateDemoData() {
             votersData = [];
             filteredVoters = [];
@@ -1636,14 +1523,10 @@ ${voterPlacemarks}
             const zipCodes = ['75034', '75035', '75036'];
             const precincts = ['P001', 'P002', 'P003', 'P004', 'P005'];
 
-            // Generate 500 voters around the target coordinates
+            // Generate 500 voters
             for (let i = 0; i < 500; i++) {
-                // Generate coordinates within ~1km radius of target center
-                const radius = Math.random() * 0.008; // Roughly 1km in degrees
-                const angle = Math.random() * 2 * Math.PI;
-                const lat = TARGET_CENTER.lat + (radius * Math.cos(angle));
-                const lng = TARGET_CENTER.lng + (radius * Math.sin(angle));
-                
+                const lat = 33.1507 + (Math.random() - 0.5) * 0.02;
+                const lng = -96.8236 + (Math.random() - 0.5) * 0.02;
                 const street = streets[Math.floor(Math.random() * streets.length)];
                 const houseNumber = Math.floor(Math.random() * 9999) + 1;
                 
@@ -1889,7 +1772,339 @@ ${voterPlacemarks}
                             <div class="d-flex justify-content-between align-items-start">
                                 <div class="flex-grow-1">
                                     <strong>${voter.name}</strong>
-                                    <br><small>Assigned: ${assignedCount} | Completed: ${completedCount}</small>
+                                    <br><small class="text-muted">${voter.address}</small>
+                                    <br><small><span class="badge" style="background-color: ${getPartyColor(voter.party)}; color: white; font-size: 0.7rem;">${voter.party}</span> | ${voter.ageClass}</small>
+                                    ${voter.visited ? `<br><small class="text-success"><i class="fas fa-check"></i> Visited ${new Date(voter.visitedAt).toLocaleDateString()}</small>` : ''}
+                                </div>
+                                <div class="text-end">
+                                    ${voter.visited ? '<span class="badge bg-success status-badge">✓</span>' : '<span class="badge bg-secondary status-badge">○</span>'}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            if (voters.length > 50) {
+                voterList.innerHTML += `<p class="text-muted text-center mt-2">Showing first 50 of ${voters.length} voters. Use filters to narrow results.</p>`;
+            }
+        }
+
+        // Clear all filters
+        function clearFilters() {
+            document.getElementById('zipFilter').value = '';
+            document.getElementById('partyFilter').value = '';
+            document.getElementById('streetFilter').value = '';
+            document.getElementById('precinctFilter').value = '';
+            document.getElementById('statusFilter').value = '';
+            applyFilters();
+        }
+
+        // Display modal voter list
+        function displayModalVoterList(voters) {
+            const modalVoterList = document.getElementById('modalVoterList');
+            if (!modalVoterList) return;
+            
+            if (voters.length === 0) {
+                modalVoterList.innerHTML = '<p class="text-muted text-center">No voters match the current filters.</p>';
+                return;
+            }
+            
+            modalVoterList.innerHTML = voters.map(voter => {
+                const partyClass = `party-${voter.party.toLowerCase()}`;
+                const visitedStatus = voter.visited ? 'visited' : '';
+                
+                return `
+                    <div class="voter-card card ${partyClass} ${visitedStatus}" 
+                         onclick="selectVoterFromModal(${voter.id})"
+                         style="cursor: pointer;">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <div class="flex-grow-1">
+                                    <strong>${voter.name}</strong>
+                                    <br><small class="text-muted">${voter.address}</small>
+                                    <br><small><span class="badge" style="background-color: ${getPartyColor(voter.party)}; color: white; font-size: 0.7rem;">${voter.party}</span></small>
+                                    <br><small class="text-muted">${voter.ageClass} | ${voter.race} | ${voter.gender}</small>
+                                    <br><small class="text-info">Precinct: ${voter.precinct}</small>
+                                    ${voter.visited ? `<br><small class="text-success">✓ Completed ${new Date(voter.visitedAt).toLocaleDateString()}</small>` : ''}
+                                </div>
+                                <div class="text-end">
+                                    ${voter.visited ? '<span class="badge bg-success status-badge">✓</span>' : '<span class="badge bg-secondary status-badge">○</span>'}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            // Add summary stats
+            if (voters.length > 0) {
+                const partyStats = {};
+                const ageStats = {};
+                const raceStats = {};
+                
+                voters.forEach(v => {
+                    partyStats[v.party] = (partyStats[v.party] || 0) + 1;
+                    ageStats[v.ageClass] = (ageStats[v.ageClass] || 0) + 1;
+                    raceStats[v.race] = (raceStats[v.race] || 0) + 1;
+                });
+                
+                const summaryHtml = `
+                    <div class="mt-3 pt-3 border-top">
+                        <h6>Demographic Summary (${voters.length} voters)</h6>
+                        <div class="row">
+                            <div class="col-4">
+                                <small><strong>Party:</strong><br>
+                                ${Object.entries(partyStats).map(([party, count]) => `${party}: ${count}`).join('<br>')}
+                                </small>
+                            </div>
+                            <div class="col-4">
+                                <small><strong>Age:</strong><br>
+                                ${Object.entries(ageStats).slice(0, 3).map(([age, count]) => `${age}: ${count}`).join('<br>')}
+                                </small>
+                            </div>
+                            <div class="col-4">
+                                <small><strong>Race:</strong><br>
+                                ${Object.entries(raceStats).slice(0, 3).map(([race, count]) => `${race}: ${count}`).join('<br>')}
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                modalVoterList.innerHTML += summaryHtml;
+            }
+        }
+
+        // Get party color
+        function getPartyColor(party) {
+            switch(party) {
+                case 'Republican': return '#dc3545';
+                case 'Democrat': return '#007bff';
+                case 'Independent': 
+                default: return '#6c757d';
+            }
+        }
+
+        // Select a voter
+        function selectVoter(voterId) {
+            currentVoter = votersData.find(v => v.id === voterId);
+            if (!currentVoter) return;
+
+            // Update map view based on dashboard type
+            if (isDashboardField) {
+                map.setView([currentVoter.lat, currentVoter.lng], 17);
+            } else {
+                map.setView([currentVoter.lat, currentVoter.lng], 16);
+            }
+
+            // Highlight the selected marker
+            Object.values(markers).forEach(marker => {
+                marker.setStyle({ weight: marker === markers[voterId] ? 4 : 2 });
+            });
+
+            // Update current assignment in field view
+            if (isDashboardField) {
+                document.getElementById('currentAssignment').style.display = 'block';
+                document.getElementById('currentVoterInfo').innerHTML = `
+                    <div class="d-flex align-items-center mb-2">
+                        <h6 class="mb-0 me-2">${currentVoter.name}</h6>
+                        <span class="badge" style="background-color: ${getPartyColor(currentVoter.party)}; color: white;">${currentVoter.party}</span>
+                    </div>
+                    <p class="mb-1"><i class="fas fa-map-marker-alt"></i> ${currentVoter.address}</p>
+                    <p class="mb-0"><small>${currentVoter.ageClass} | ${currentVoter.precinct}</small></p>
+                `;
+            }
+
+            // Load existing notes if visited
+            if (currentVoter.visited) {
+                document.getElementById('present').checked = currentVoter.present;
+                document.getElementById('willVote').checked = currentVoter.willVote;
+                document.getElementById('nextTime').checked = currentVoter.nextTime;
+                document.getElementById('voterNotes').value = currentVoter.notes;
+                document.getElementById('supportLevel').value = currentVoter.supportLevel;
+            } else {
+                document.getElementById('notesForm').reset();
+            }
+
+            // Update displays
+            displayVoterList();
+            updateCounts();
+        }
+
+        // Select voter from modal
+        function selectVoterFromModal(voterId) {
+            selectVoter(voterId);
+            // Close modal
+            const modal = bootstrap.Modal.getInstance(document.getElementById('voterListModal'));
+            modal.hide();
+        }
+
+        // Field-specific functions
+        function findNearestVoter() {
+            if (!canvasserLocation) {
+                // If no GPS location, use center of the area as fallback
+                canvasserLocation = {
+                    lat: 33.174213792022506,
+                    lng: -96.78506436295082
+                };
+                showNotification('Using approximate location. Enable GPS for accurate results.', 'warning');
+            }
+
+            const unvisitedVoters = votersData.filter(v => v.assignedTo === currentUserId && !v.visited);
+            if (unvisitedVoters.length === 0) {
+                showNotification('All your assigned voters have been visited!', 'success');
+                return;
+            }
+
+            // Find nearest unvisited voter
+            let nearest = null;
+            let minDistance = Infinity;
+
+            unvisitedVoters.forEach(voter => {
+                const distance = calculateDistance(
+                    canvasserLocation.lat, canvasserLocation.lng,
+                    voter.lat, voter.lng
+                );
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    nearest = voter;
+                }
+            });
+
+            if (nearest) {
+                selectVoter(nearest.id);
+                const distanceText = (minDistance * 1000).toFixed(0);
+                showNotification(`Nearest voter: ${nearest.name} (${distanceText}m away)`, 'info');
+            }
+        }
+
+        function getDirections() {
+            if (!currentVoter) {
+                alert('Please select a voter first.');
+                return;
+            }
+
+            // Open Google Maps directions
+            const url = `https://www.google.com/maps/dir/?api=1&destination=${currentVoter.lat},${currentVoter.lng}`;
+            window.open(url, '_blank');
+        }
+
+        function markNotHome() {
+            if (!currentVoter) {
+                alert('Please select a voter first.');
+                return;
+            }
+
+            // Quick mark as not home
+            currentVoter.visited = true;
+            currentVoter.visitedAt = new Date().toISOString();
+            currentVoter.present = false;
+            currentVoter.notes = 'Not home';
+
+            // Update marker
+            if (markers[currentVoter.id]) {
+                markers[currentVoter.id].setStyle({ 
+                    fillOpacity: 0.6,
+                    color: '#28a745',
+                    weight: 3
+                });
+            }
+
+            applyFilters();
+            updateCounts();
+            
+            showNotification('Marked as "Not Home"', 'info');
+        }
+
+        function startGPSTracking() {
+            if (locationWatchId) {
+                stopGPSTracking();
+                return;
+            }
+
+            // Simulate GPS tracking
+            document.getElementById('locationStatus').textContent = 'Active';
+            
+            locationWatchId = setInterval(() => {
+                // Simulate GPS movement
+                const centerLat = 33.1507;
+                const centerLng = -96.8236;
+                const randomLat = centerLat + (Math.random() - 0.5) * 0.01;
+                const randomLng = centerLng + (Math.random() - 0.5) * 0.01;
+                
+                canvasserLocation = { lat: randomLat, lng: randomLng };
+                updateCanvasserMarker();
+                updateProximityTracking();
+                
+                // Update canvasser data for admin view
+                canvassers[0].location = canvasserLocation;
+                canvassers[0].lastUpdate = new Date();
+                updateCanvasserTracking();
+            }, 3000);
+        }
+
+        function stopGPSTracking() {
+            if (locationWatchId) {
+                clearInterval(locationWatchId);
+                locationWatchId = null;
+                document.getElementById('locationStatus').textContent = 'Stopped';
+            }
+        }
+
+        // Update proximity tracking
+        function updateProximityTracking() {
+            if (!canvasserLocation || !currentVoter) return;
+
+            const distance = calculateDistance(
+                canvasserLocation.lat, canvasserLocation.lng,
+                currentVoter.lat, currentVoter.lng
+            );
+
+            const distanceInFeet = distance * 3280.84;
+            
+            if (distanceInFeet <= 50) {
+                timeInCurrentArea++;
+                document.getElementById('locationStatus').textContent = `Within 50ft (${Math.round(distanceInFeet)}ft)`;
+            } else {
+                timeInCurrentArea = 0;
+                document.getElementById('locationStatus').textContent = `${Math.round(distanceInFeet)}ft away`;
+            }
+            
+            document.getElementById('timeInArea').textContent = timeInCurrentArea;
+        }
+
+        // Calculate distance between two points
+        function calculateDistance(lat1, lng1, lat2, lng2) {
+            const R = 6371; // Radius of the Earth in km
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLng = (lng2 - lng1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLng/2) * Math.sin(dLng/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+
+        // Update canvasser tracking (admin view)
+        function updateCanvasserTracking() {
+            const trackingContainer = document.getElementById('canvasserTracking');
+            if (!trackingContainer) return;
+
+            trackingContainer.innerHTML = canvassers.map(canvasser => {
+                const timeSinceUpdate = Math.floor((new Date() - canvasser.lastUpdate) / 1000);
+                const statusClass = timeSinceUpdate < 30 ? 'active' : 'inactive';
+                const statusText = timeSinceUpdate < 30 ? 'Active' : 'Inactive';
+                const assignedCount = canvasser.assignedVoters ? canvasser.assignedVoters.length : 0;
+                const completedCount = assignedCount > 0 ? votersData.filter(v => v.assignedTo === canvasser.id && v.visited).length : 0;
+                
+                return `
+                    <div class="canvasser-tracker ${statusClass}" onclick="selectWorkerForReport(${canvasser.id})">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div>
+                                <strong>${canvasser.name}</strong> 
+                                <small class="text-muted">(ID: ${canvasser.id})</small>
+                                <br><small>Assigned: ${assignedCount} | Completed: ${completedCount}</small>
                                 <br><small>Progress: ${assignedCount > 0 ? Math.round((completedCount/assignedCount)*100) : 0}%</small>
                                 ${canvasser.currentVoter ? `<br><small class="text-info">At: ${canvasser.currentVoter.name}</small>` : ''}
                             </div>
@@ -2284,6 +2499,81 @@ ${voterPlacemarks}
                     document.getElementById('modalPendingCount').textContent = assignedVoters.length - completedVoters.length;
                 }
             }
+
+            // Update tracking data - handle case where tracking hasn't started
+            const totalTimeMinutes = (startTrackingTime && startTrackingTime instanceof Date) ? 
+                Math.round((new Date() - startTrackingTime) / 60000) : 0;
+            
+            if (document.getElementById('totalFieldTime')) {
+                document.getElementById('totalFieldTime').textContent = totalTimeMinutes;
+            }
+        }
+
+        // Enhanced voter selection with proximity checking
+        function selectVoter(voterId) {
+            currentVoter = votersData.find(v => v.id === voterId);
+            if (!currentVoter) return;
+
+            // Update map view based on dashboard type
+            if (isDashboardField) {
+                map.setView([currentVoter.lat, currentVoter.lng], 17);
+            } else {
+                map.setView([currentVoter.lat, currentVoter.lng], 16);
+            }
+
+            // Highlight the selected marker
+            Object.values(markers).forEach(marker => {
+                marker.setStyle({ weight: marker === markers[voterId] ? 4 : 2 });
+            });
+
+            // Reset time in current area
+            timeInCurrentArea = 0;
+
+            // Update current assignment in field view
+            if (isDashboardField) {
+                document.getElementById('currentAssignment').style.display = 'block';
+                document.getElementById('currentVoterInfo').innerHTML = `
+                    <div class="d-flex align-items-center mb-2">
+                        <h6 class="mb-0 me-2">${currentVoter.name}</h6>
+                        <span class="badge" style="background-color: ${getPartyColor(currentVoter.party)}; color: white;">${currentVoter.party}</span>
+                    </div>
+                    <p class="mb-1"><i class="fas fa-map-marker-alt"></i> ${currentVoter.address}</p>
+                    <p class="mb-1"><small>${currentVoter.ageClass} | ${currentVoter.race} | ${currentVoter.gender}</small></p>
+                    <p class="mb-0"><small>Precinct: ${currentVoter.precinct}</small></p>
+                `;
+            }
+
+            // Load existing notes if visited
+            if (currentVoter.visited) {
+                document.getElementById('present').checked = currentVoter.present;
+                document.getElementById('willVote').checked = currentVoter.willVote;
+                document.getElementById('nextTime').checked = currentVoter.nextTime;
+                document.getElementById('voterNotes').value = currentVoter.notes;
+                document.getElementById('supportLevel').value = currentVoter.supportLevel;
+            } else {
+                document.getElementById('notesForm').reset();
+            }
+
+            // Check proximity immediately if location is available
+            if (canvasserLocation) {
+                checkProximityToCurrentVoter();
+            } else {
+                locationValidationStatus = false;
+            }
+
+            // Update form validation
+            updateFormValidation();
+
+            // Update displays
+            displayVoterList();
+            updateCounts();
+
+            // Scroll to notes form on mobile
+            if (window.innerWidth < 768) {
+                document.getElementById('currentAssignment').scrollIntoView({ behavior: 'smooth' });
+            }
+
+            showNotification(`Selected: ${currentVoter.name}`, 'info');
         }
 
         // Handle notes form submission with proximity validation
@@ -2474,288 +2764,4 @@ ${voterPlacemarks}
         });
     </script>
 </body>
-</html> class="text-muted">${voter.address}</small>
-                                    <br><small><span class="badge" style="background-color: ${getPartyColor(voter.party)}; color: white; font-size: 0.7rem;">${voter.party}</span> | ${voter.ageClass}</small>
-                                    ${voter.visited ? `<br><small class="text-success"><i class="fas fa-check"></i> Visited ${new Date(voter.visitedAt).toLocaleDateString()}</small>` : ''}
-                                </div>
-                                <div class="text-end">
-                                    ${voter.visited ? '<span class="badge bg-success status-badge">✓</span>' : '<span class="badge bg-secondary status-badge">○</span>'}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-            
-            if (voters.length > 50) {
-                voterList.innerHTML += `<p class="text-muted text-center mt-2">Showing first 50 of ${voters.length} voters. Use filters to narrow results.</p>`;
-            }
-        }
-
-        // Clear all filters
-        function clearFilters() {
-            document.getElementById('zipFilter').value = '';
-            document.getElementById('partyFilter').value = '';
-            document.getElementById('streetFilter').value = '';
-            document.getElementById('precinctFilter').value = '';
-            document.getElementById('statusFilter').value = '';
-            applyFilters();
-        }
-
-        // Display modal voter list
-        function displayModalVoterList(voters) {
-            const modalVoterList = document.getElementById('modalVoterList');
-            if (!modalVoterList) return;
-            
-            if (voters.length === 0) {
-                modalVoterList.innerHTML = '<p class="text-muted text-center">No voters match the current filters.</p>';
-                return;
-            }
-            
-            modalVoterList.innerHTML = voters.map(voter => {
-                const partyClass = `party-${voter.party.toLowerCase()}`;
-                const visitedStatus = voter.visited ? 'visited' : '';
-                
-                return `
-                    <div class="voter-card card ${partyClass} ${visitedStatus}" 
-                         onclick="selectVoterFromModal(${voter.id})"
-                         style="cursor: pointer;">
-                        <div class="card-body">
-                            <div class="d-flex justify-content-between align-items-start">
-                                <div class="flex-grow-1">
-                                    <strong>${voter.name}</strong>
-                                    <br><small class="text-muted">${voter.address}</small>
-                                    <br><small><span class="badge" style="background-color: ${getPartyColor(voter.party)}; color: white; font-size: 0.7rem;">${voter.party}</span></small>
-                                    <br><small class="text-muted">${voter.ageClass} | ${voter.race} | ${voter.gender}</small>
-                                    <br><small class="text-info">Precinct: ${voter.precinct}</small>
-                                    ${voter.visited ? `<br><small class="text-success">✓ Completed ${new Date(voter.visitedAt).toLocaleDateString()}</small>` : ''}
-                                </div>
-                                <div class="text-end">
-                                    ${voter.visited ? '<span class="badge bg-success status-badge">✓</span>' : '<span class="badge bg-secondary status-badge">○</span>'}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-            
-            // Add summary stats
-            if (voters.length > 0) {
-                const partyStats = {};
-                const ageStats = {};
-                const raceStats = {};
-                
-                voters.forEach(v => {
-                    partyStats[v.party] = (partyStats[v.party] || 0) + 1;
-                    ageStats[v.ageClass] = (ageStats[v.ageClass] || 0) + 1;
-                    raceStats[v.race] = (raceStats[v.race] || 0) + 1;
-                });
-                
-                const summaryHtml = `
-                    <div class="mt-3 pt-3 border-top">
-                        <h6>Demographic Summary (${voters.length} voters)</h6>
-                        <div class="row">
-                            <div class="col-4">
-                                <small><strong>Party:</strong><br>
-                                ${Object.entries(partyStats).map(([party, count]) => `${party}: ${count}`).join('<br>')}
-                                </small>
-                            </div>
-                            <div class="col-4">
-                                <small><strong>Age:</strong><br>
-                                ${Object.entries(ageStats).slice(0, 3).map(([age, count]) => `${age}: ${count}`).join('<br>')}
-                                </small>
-                            </div>
-                            <div class="col-4">
-                                <small><strong>Race:</strong><br>
-                                ${Object.entries(raceStats).slice(0, 3).map(([race, count]) => `${race}: ${count}`).join('<br>')}
-                                </small>
-                            </div>
-                        </div>
-                    </div>
-                `;
-                
-                modalVoterList.innerHTML += summaryHtml;
-            }
-        }
-
-        // Get party color
-        function getPartyColor(party) {
-            switch(party) {
-                case 'Republican': return '#dc3545';
-                case 'Democrat': return '#007bff';
-                case 'Independent': 
-                default: return '#6c757d';
-            }
-        }
-
-        // Select a voter
-        function selectVoter(voterId) {
-            currentVoter = votersData.find(v => v.id === voterId);
-            if (!currentVoter) return;
-
-            // Update map view based on dashboard type
-            if (isDashboardField) {
-                map.setView([currentVoter.lat, currentVoter.lng], 17);
-            } else {
-                map.setView([currentVoter.lat, currentVoter.lng], 16);
-            }
-
-            // Highlight the selected marker
-            Object.values(markers).forEach(marker => {
-                marker.setStyle({ weight: marker === markers[voterId] ? 4 : 2 });
-            });
-
-            // Update current assignment in field view
-            if (isDashboardField) {
-                document.getElementById('currentAssignment').style.display = 'block';
-                document.getElementById('currentVoterInfo').innerHTML = `
-                    <div class="d-flex align-items-center mb-2">
-                        <h6 class="mb-0 me-2">${currentVoter.name}</h6>
-                        <span class="badge" style="background-color: ${getPartyColor(currentVoter.party)}; color: white;">${currentVoter.party}</span>
-                    </div>
-                    <p class="mb-1"><i class="fas fa-map-marker-alt"></i> ${currentVoter.address}</p>
-                    <p class="mb-1"><small>${currentVoter.ageClass} | ${currentVoter.race} | ${currentVoter.gender}</small></p>
-                    <p class="mb-0"><small>Precinct: ${currentVoter.precinct}</small></p>
-                `;
-            }
-
-            // Load existing notes if visited
-            if (currentVoter.visited) {
-                document.getElementById('present').checked = currentVoter.present;
-                document.getElementById('willVote').checked = currentVoter.willVote;
-                document.getElementById('nextTime').checked = currentVoter.nextTime;
-                document.getElementById('voterNotes').value = currentVoter.notes;
-                document.getElementById('supportLevel').value = currentVoter.supportLevel;
-            } else {
-                document.getElementById('notesForm').reset();
-            }
-
-            // Check proximity if location is available
-            if (canvasserLocation) {
-                checkProximityToCurrentVoter();
-            }
-
-            // Update form validation
-            updateFormValidation();
-
-            // Update displays
-            displayVoterList();
-            updateCounts();
-        }
-
-        // Select voter from modal
-        function selectVoterFromModal(voterId) {
-            selectVoter(voterId);
-            // Close modal
-            const modal = bootstrap.Modal.getInstance(document.getElementById('voterListModal'));
-            modal.hide();
-        }
-
-        // Field-specific functions
-        function findNearestVoter() {
-            if (!canvasserLocation) {
-                // If no GPS location, use target center as fallback
-                canvasserLocation = {
-                    lat: TARGET_CENTER.lat,
-                    lng: TARGET_CENTER.lng
-                };
-                showNotification('Using approximate location. Enable GPS for accurate results.', 'warning');
-            }
-
-            const unvisitedVoters = votersData.filter(v => v.assignedTo === currentUserId && !v.visited);
-            if (unvisitedVoters.length === 0) {
-                showNotification('All your assigned voters have been visited!', 'success');
-                return;
-            }
-
-            // Find nearest unvisited voter
-            let nearest = null;
-            let minDistance = Infinity;
-
-            unvisitedVoters.forEach(voter => {
-                const distance = calculateDistance(
-                    canvasserLocation.lat, canvasserLocation.lng,
-                    voter.lat, voter.lng
-                );
-                if (distance < minDistance) {
-                    minDistance = distance;
-                    nearest = voter;
-                }
-            });
-
-            if (nearest) {
-                selectVoter(nearest.id);
-                const distanceText = (minDistance * 1000).toFixed(0);
-                showNotification(`Nearest voter: ${nearest.name} (${distanceText}m away)`, 'info');
-            }
-        }
-
-        function getDirections() {
-            if (!currentVoter) {
-                alert('Please select a voter first.');
-                return;
-            }
-
-            // Open Google Maps directions
-            const url = `https://www.google.com/maps/dir/?api=1&destination=${currentVoter.lat},${currentVoter.lng}`;
-            window.open(url, '_blank');
-        }
-
-        function markNotHome() {
-            if (!currentVoter) {
-                alert('Please select a voter first.');
-                return;
-            }
-
-            // Quick mark as not home
-            currentVoter.visited = true;
-            currentVoter.visitedAt = new Date().toISOString();
-            currentVoter.present = false;
-            currentVoter.notes = 'Not home';
-
-            // Update marker
-            if (markers[currentVoter.id]) {
-                markers[currentVoter.id].setStyle({ 
-                    fillOpacity: 0.6,
-                    color: '#28a745',
-                    weight: 3
-                });
-            }
-
-            applyFilters();
-            updateCounts();
-            
-            showNotification('Marked as "Not Home"', 'info');
-        }
-
-        // Calculate distance between two points
-        function calculateDistance(lat1, lng1, lat2, lng2) {
-            const R = 6371; // Radius of the Earth in km
-            const dLat = (lat2 - lat1) * Math.PI / 180;
-            const dLng = (lng2 - lng1) * Math.PI / 180;
-            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-                Math.sin(dLng/2) * Math.sin(dLng/2);
-            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-            return R * c;
-        }
-
-        // Update canvasser tracking (admin view)
-        function updateCanvasserTracking() {
-            const trackingContainer = document.getElementById('canvasserTracking');
-            if (!trackingContainer) return;
-
-            trackingContainer.innerHTML = canvassers.map(canvasser => {
-                const timeSinceUpdate = Math.floor((new Date() - canvasser.lastUpdate) / 1000);
-                const statusClass = timeSinceUpdate < 30 ? 'active' : 'inactive';
-                const statusText = timeSinceUpdate < 30 ? 'Active' : 'Inactive';
-                const assignedCount = canvasser.assignedVoters ? canvasser.assignedVoters.length : 0;
-                const completedCount = assignedCount > 0 ? votersData.filter(v => v.assignedTo === canvasser.id && v.visited).length : 0;
-                
-                return `
-                    <div class="canvasser-tracker ${statusClass}" onclick="selectWorkerForReport(${canvasser.id})">
-                        <div class="d-flex justify-content-between align-items-start">
-                            <div>
-                                <strong>${canvasser.name}</strong> 
-                                <small class="text-muted">(ID: ${canvasser.id})</small>
-                                <br><small
+</html>
