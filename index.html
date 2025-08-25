@@ -270,7 +270,7 @@
     <div class="canvasser-status field-only">
         <div><i class="fas fa-user"></i> <span id="canvasserName">Demo User</span></div>
         <div><i class="fas fa-location-dot"></i> Status: <span id="locationStatus">Searching...</span></div>
-        <div><i class="fas fa-clock"></i> Time: <span id="timeInArea">0</span>s</div>
+        <div><i class="fas fa-clock"></i> Last Update: <span id="lastUpdateTime">--</span></div>
     </div>
 
     <div class="container-fluid">
@@ -874,17 +874,12 @@
         let currentVoter = null;
         let canvasserLocation = null;
         let locationWatchId = null;
-        let timeInCurrentArea = 0;
         let markers = {};
         let canvasserMarker = null;
         let isDashboardField = true;
         let isLocationSharingActive = false;
         let locationPath = [];
-        let startTrackingTime = null;
         let totalPathDistance = 0;
-        let proximityCheckInterval = null;
-        let locationValidationStatus = false;
-        let currentAccuracy = 0;
         let lastLocationUpdate = null;
         let locationLog = [];
 
@@ -896,7 +891,6 @@
                 status: "active",
                 currentVoter: null,
                 location: { lat: 33.17854842488629, lng: -96.78402904191564 },
-                timeAtLocation: 0,
                 todayVisits: 0,
                 assignedVoters: [],
                 lastUpdate: new Date()
@@ -934,7 +928,6 @@
                 return;
             }
 
-            // Request location permission with user interaction
             navigator.geolocation.getCurrentPosition(
                 function(position) {
                     // Success - location permission granted
@@ -960,15 +953,10 @@
 
         function onLocationPermissionGranted() {
             // Update status
-            updateGPSStatus(`Location enabled (${Math.round(canvasserLocation.accuracy)}m accuracy)`, 'good');
+            updateGPSStatus(`Location enabled`, 'good');
             
             // Show success message
-            showNotification('Location services enabled! You can now start canvassing.', 'success');
-            
-            // Enable the tracking button
-            const trackingBtn = document.getElementById('trackingBtn');
-            trackingBtn.disabled = false;
-            trackingBtn.innerHTML = '<i class="fas fa-play"></i><br><small>Start Tracking</small>';
+            showNotification('Location services enabled! Please click Start Tracking to begin.', 'success');
             
             // Update canvasser marker on map
             updateCanvasserMarker();
@@ -1034,9 +1022,7 @@
                 return;
             }
             isLocationSharingActive = true;
-            startTrackingTime = new Date();
             locationPath = [];
-            locationLog = [];
             totalPathDistance = 0;
             updateGPSStatus('Tracking active', 'good');
             const trackingBtn = document.getElementById('trackingBtn');
@@ -1051,12 +1037,10 @@
                 {
                     enableHighAccuracy: true,
                     timeout: 5000,
-                    maximumAge: 10000
+                    maximumAge: 1000
                 }
             );
 
-            // Start proximity checking
-            proximityCheckInterval = setInterval(checkProximityToCurrentVoter, 5000);
             showNotification('Location tracking started', 'success');
         }
 
@@ -1067,18 +1051,12 @@
                 navigator.geolocation.clearWatch(locationWatchId);
                 locationWatchId = null;
             }
-            if (proximityCheckInterval) {
-                clearInterval(proximityCheckInterval);
-                proximityCheckInterval = null;
-            }
             updateGPSStatus('Tracking stopped', 'warning');
             const trackingBtn = document.getElementById('trackingBtn');
             trackingBtn.innerHTML = '<i class="fas fa-play"></i><br><small>Start Tracking</small>';
             trackingBtn.classList.remove('btn-danger');
             trackingBtn.classList.add('btn-success');
 
-            // Save final path data
-            saveFinalPathData();
             showNotification('Location tracking stopped', 'info');
         }
 
@@ -1091,13 +1069,14 @@
                 speed: position.coords.speed || 0
             };
 
-            // Update accuracy status
-            currentAccuracy = position.coords.accuracy;
-            if (currentAccuracy > 50) {
-                updateGPSStatus(`Low accuracy (${Math.round(currentAccuracy)}m)`, 'warning');
+            // Update accuracy and last update time status
+            const accuracyMessage = `Accuracy: ${Math.round(newLocation.accuracy)}m`;
+            if (newLocation.accuracy > 50) {
+                updateGPSStatus(`Low accuracy (${Math.round(newLocation.accuracy)}m)`, 'warning');
             } else {
-                updateGPSStatus(`Good accuracy (${Math.round(currentAccuracy)}m)`, 'good');
+                updateGPSStatus(`Good accuracy (${Math.round(newLocation.accuracy)}m)`, 'good');
             }
+            document.getElementById('lastUpdateTime').textContent = new Date().toLocaleTimeString();
 
             // Calculate distance from last position
             if (canvasserLocation) {
@@ -1115,48 +1094,22 @@
             }
             
             canvasserLocation = newLocation;
-            lastLocationUpdate = new Date();
-
+            
             // Update canvasser marker on the map
             updateCanvasserMarker();
 
-            // Log location for admin
-            logLocationForAdmin();
-
-            // Check proximity to current voter
-            if (currentVoter) {
-                checkProximityToCurrentVoter();
-            }
-        }
-
-        function handleLocationError(error) {
-            let errorMessage = 'Location error: ';
-            switch(error.code) {
-                case error.PERMISSION_DENIED:
-                    errorMessage += 'Permission denied. Please enable location access.';
-                    updateGPSStatus('Permission denied', 'error');
-                    showLocationPermissionModal();
-                    break;
-                case error.POSITION_UNAVAILABLE:
-                    errorMessage += 'Location unavailable.';
-                    updateGPSStatus('Location unavailable', 'error');
-                    break;
-                case error.TIMEOUT:
-                    errorMessage += 'Location timeout.';
-                    updateGPSStatus('GPS timeout', 'warning');
-                    break;
-                default:
-                    errorMessage += 'Unknown location error.';
-                    updateGPSStatus('GPS error', 'error');
-                    break;
-            }
-            showNotification(errorMessage, 'error');
+            // Check proximity to current voter and update form
+            checkProximityToCurrentVoter();
         }
 
         function checkProximityToCurrentVoter() {
+            const proximityAlert = document.getElementById('locationValidation');
+            const submitBtn = document.getElementById('submitBtn');
+
             if (!currentVoter || !canvasserLocation) {
-                locationValidationStatus = false;
-                updateFormValidation();
+                submitBtn.disabled = true;
+                submitBtn.className = 'btn btn-secondary w-100';
+                if(proximityAlert) proximityAlert.style.display = 'block';
                 return;
             }
 
@@ -1167,60 +1120,24 @@
                 currentVoter.lng
             ) * 1000; // Convert to meters
 
-            const proximityAlert = document.getElementById('locationValidation');
-            const proximityMessage = proximityAlert.querySelector('strong').nextSibling;
-
-            // CHANGE: PROXIMITY_THRESHOLD is now 1000 feet (304.8 meters)
+            // Proximity threshold is 1000 feet (304.8 meters)
             const PROXIMITY_THRESHOLD = 304.8;
             
             if (distance <= PROXIMITY_THRESHOLD) {
                 // Within proximity - enable form
-                locationValidationStatus = true;
-                proximityAlert.className = 'proximity-good';
-                proximityAlert.style.display = 'block';
-                proximityMessage.textContent = ` You are within 1000 feet of the voter's address. Form enabled.`;
-                
-                // Log time at this location
-                logTimeAtLocation(currentVoter, distance);
-            } else {
-                // Outside proximity - disable form
-                locationValidationStatus = false;
-                proximityAlert.className = 'proximity-warning';
-                proximityAlert.style.display = 'block';
-                proximityMessage.textContent = ` You are ${Math.round(distance)}m away. Move within 1000 feet to enable form.`;
-            }
-            
-            updateFormValidation();
-        }
-
-        function logTimeAtLocation(voter, distance) {
-            const now = new Date();
-            const logEntry = {
-                voterId: voter.id,
-                voterName: voter.name,
-                distance: distance,
-                timestamp: now,
-                duration: timeInCurrentArea
-            };
-            // Add to location log
-            locationLog.push(logEntry);
-            timeInCurrentArea++;
-        }
-
-        function updateFormValidation() {
-            const submitBtn = document.getElementById('submitBtn');
-            const locationValidation = document.getElementById('locationValidation');
-            if (locationValidationStatus && currentVoter) {
                 submitBtn.disabled = false;
                 submitBtn.className = 'btn btn-success w-100';
-                locationValidation.style.display = 'none';
+                proximityAlert.className = 'proximity-good';
+                proximityAlert.innerHTML = `<i class="fas fa-check-circle"></i> <strong>Location Confirmed:</strong> You are within 1000 feet of the address.`;
             } else {
+                // Outside proximity - disable form
                 submitBtn.disabled = true;
                 submitBtn.className = 'btn btn-secondary w-100';
-                if (currentVoter) {
-                    locationValidation.style.display = 'block';
-                }
+                proximityAlert.className = 'proximity-warning';
+                proximityAlert.innerHTML = `<i class="fas fa-exclamation-triangle"></i> <strong>Location Required:</strong> You are ${Math.round(distance)}m away. Move within 1000 feet to enable form.`;
             }
+            
+            proximityAlert.style.display = 'block';
         }
 
         function updateGPSStatus(message, status) {
@@ -1229,35 +1146,28 @@
             if (statusText) statusText.textContent = message;
         }
 
-        function logLocationForAdmin() {
-            // Update canvasser data for admin view
-            const canvasser = canvassers.find(c => c.id === currentUserId);
-            if (canvasser) {
-                canvasser.location = canvasserLocation;
-                canvasser.lastUpdate = new Date();
-                canvasser.totalDistance = totalPathDistance;
-                // Add to path for KML export
-                if (!canvasser.path) canvasser.path = [];
-                canvasser.path.push({ lat: canvasserLocation.lat, lng: canvasserLocation.lng, timestamp: canvasserLocation.timestamp });
-            }
-        }
-
         function showLocationLog() {
             const modal = new bootstrap.Modal(document.getElementById('locationLogModal'));
             const logContent = document.getElementById('locationLogContent');
             logContent.innerHTML = ''; // Clear previous log
-            locationLog.forEach(entry => {
-                const logItem = document.createElement('div');
-                logItem.className = 'location-log';
-                logItem.innerHTML = `
-                    <strong>${entry.timestamp.toLocaleTimeString()}</strong>: ${entry.action}
-                    <br>
-                    <small>Lat: ${entry.lat.toFixed(4)}, Lng: ${entry.lng.toFixed(4)} (Accuracy: ${Math.round(entry.accuracy)}m)</small>
-                `;
-                logContent.appendChild(logItem);
-            });
+            
+            if (locationPath.length === 0) {
+                 logContent.innerHTML = '<p class="text-muted">No location data has been recorded yet.</p>';
+            } else {
+                locationPath.forEach(entry => {
+                    const logItem = document.createElement('div');
+                    logItem.className = 'location-log';
+                    logItem.innerHTML = `
+                        <strong>${new Date(entry.timestamp).toLocaleTimeString()}</strong>
+                        <br>
+                        <small>Lat: ${entry.lat.toFixed(4)}, Lng: ${entry.lng.toFixed(4)} (Accuracy: ${Math.round(entry.accuracy)}m)</small>
+                    `;
+                    logContent.appendChild(logItem);
+                });
+            }
+
             document.getElementById('totalDistance').textContent = totalPathDistance.toFixed(2) + ' km';
-            document.getElementById('totalTime').textContent = Math.round((new Date() - startTrackingTime) / 60000) + ' minutes';
+            document.getElementById('totalTime').textContent = Math.round((new Date() - (locationPath[0] ? new Date(locationPath[0].timestamp) : new Date())) / 60000) + ' minutes';
             modal.show();
         }
 
@@ -1597,26 +1507,29 @@
 
         function selectVoter(voterId) {
             if (currentVoter) {
-                document.querySelector(`.voter-card[data-voter-id="${currentVoter.id}"]`).classList.remove('current');
+                const prevCard = document.querySelector(`.voter-card[data-voter-id="${currentVoter.id}"]`);
+                if (prevCard) prevCard.classList.remove('current');
             }
             currentVoter = votersData.find(v => v.id === voterId);
-            document.querySelector(`.voter-card[data-voter-id="${voterId}"]`).classList.add('current');
+            const newCard = document.querySelector(`.voter-card[data-voter-id="${voterId}"]`);
+            if (newCard) newCard.classList.add('current');
             
             // Pan map to voter location
             map.panTo([currentVoter.lat, currentVoter.lng]);
 
-            // Update UI
+            // Update UI and check proximity
             updateFieldAssignmentInfo(currentVoter);
             checkProximityToCurrentVoter();
         }
 
         function deselectVoter() {
             if (currentVoter) {
-                document.querySelector(`.voter-card[data-voter-id="${currentVoter.id}"]`).classList.remove('current');
+                const prevCard = document.querySelector(`.voter-card[data-voter-id="${currentVoter.id}"]`);
+                if (prevCard) prevCard.classList.remove('current');
             }
             currentVoter = null;
             updateFieldAssignmentInfo(null);
-            updateFormValidation();
+            checkProximityToCurrentVoter(); // Reset validation display
         }
 
         function updateCounts() {
@@ -1639,7 +1552,7 @@
 
         function findNearestVoter() {
             if (!canvasserLocation) {
-                showNotification('Cannot find nearest voter. Location not available.', 'error');
+                showNotification('Cannot find nearest voter. Location not available. Please click "Start Tracking".', 'error');
                 return;
             }
 
@@ -1717,8 +1630,9 @@
                 showNotification('Please select a voter before submitting.', 'error');
                 return;
             }
-
-            if (!locationValidationStatus) {
+            
+            const submitBtn = document.getElementById('submitBtn');
+            if (submitBtn.disabled) {
                 showNotification('Form cannot be submitted. You are too far from the voter address.', 'error');
                 return;
             }
