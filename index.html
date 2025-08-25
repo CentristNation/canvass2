@@ -876,12 +876,15 @@
         let locationWatchId = null;
         let markers = {};
         let canvasserMarker = null;
+        let proximityCircle = null; // New global variable for the proximity circle
+        let currentVoterMarker = null; // New global variable for the selected voter marker
         let isDashboardField = true;
         let isLocationSharingActive = false;
         let locationPath = [];
         let totalPathDistance = 0;
         let lastLocationUpdate = null;
         let locationLog = [];
+        const PROXIMITY_THRESHOLD_M = 304.8; // 1000 feet in meters
 
         // Simulated canvassers for admin view
         let canvassers = [
@@ -1059,7 +1062,8 @@
 
             showNotification('Location tracking stopped', 'info');
         }
-
+        
+        // This function handles every new location update
         function handleLocationUpdate(position) {
             const newLocation = {
                 lat: position.coords.latitude,
@@ -1069,6 +1073,20 @@
                 speed: position.coords.speed || 0
             };
 
+            // Calculate distance from last position if it exists
+            if (canvasserLocation) {
+                const distance = calculateDistance(
+                    canvasserLocation.lat,
+                    canvasserLocation.lng,
+                    newLocation.lat,
+                    newLocation.lng
+                ) * 1000; // Convert to meters
+                totalPathDistance += distance / 1000; // Convert to km
+                locationPath.push({ lat: newLocation.lat, lng: newLocation.lng, timestamp: newLocation.timestamp, accuracy: newLocation.accuracy });
+            }
+            
+            canvasserLocation = newLocation;
+            
             // Update accuracy and last update time status
             const accuracyMessage = `Accuracy: ${Math.round(newLocation.accuracy)}m`;
             if (newLocation.accuracy > 50) {
@@ -1077,25 +1095,8 @@
                 updateGPSStatus(`Good accuracy (${Math.round(newLocation.accuracy)}m)`, 'good');
             }
             document.getElementById('lastUpdateTime').textContent = new Date().toLocaleTimeString();
-
-            // Calculate distance from last position
-            if (canvasserLocation) {
-                const distance = calculateDistance(
-                    canvasserLocation.lat,
-                    canvasserLocation.lng,
-                    newLocation.lat,
-                    newLocation.lng
-                ) * 1000; // Convert to meters
-                // Only update if moved more than 5 meters (reduce GPS noise)
-                if (distance > 5) {
-                    totalPathDistance += distance / 1000; // Convert to km
-                    locationPath.push({ lat: newLocation.lat, lng: newLocation.lng, timestamp: newLocation.timestamp, accuracy: newLocation.accuracy });
-                }
-            }
             
-            canvasserLocation = newLocation;
-            
-            // Update canvasser marker on the map
+            // Update canvasser marker and proximity circle on the map
             updateCanvasserMarker();
 
             // Check proximity to current voter and update form
@@ -1119,16 +1120,13 @@
                 currentVoter.lat,
                 currentVoter.lng
             ) * 1000; // Convert to meters
-
-            // Proximity threshold is 1000 feet (304.8 meters)
-            const PROXIMITY_THRESHOLD = 304.8;
             
-            if (distance <= PROXIMITY_THRESHOLD) {
+            if (distance <= PROXIMITY_THRESHOLD_M) {
                 // Within proximity - enable form
                 submitBtn.disabled = false;
                 submitBtn.className = 'btn btn-success w-100';
                 proximityAlert.className = 'proximity-good';
-                proximityAlert.innerHTML = `<i class="fas fa-check-circle"></i> <strong>Location Confirmed:</strong> You are within 1000 feet of the address.`;
+                proximityAlert.innerHTML = `<i class="fas fa-check-circle"></i> <strong>Location Confirmed:</strong> You are ${Math.round(distance)}m away.`;
             } else {
                 // Outside proximity - disable form
                 submitBtn.disabled = true;
@@ -1209,6 +1207,16 @@
                 maxZoom: 19,
                 attribution: '© OpenStreetMap contributors'
             }).addTo(map);
+
+            // Create the proximity circle layer, but don't add it to the map yet
+            proximityCircle = L.circle([0, 0], {
+                radius: PROXIMITY_THRESHOLD_M, // 1000 feet in meters
+                color: 'blue',
+                fillColor: '#3081e7',
+                fillOpacity: 0.1,
+                weight: 2,
+                dashArray: '5, 5'
+            });
 
             // Add a click listener to the map to select a voter
             map.on('click', function(e) {
@@ -1473,6 +1481,9 @@
 
             // Update canvasser marker after voter markers
             updateCanvasserMarker();
+            if (currentVoter) {
+                 updateCurrentVoterMarker(currentVoter);
+            }
         }
 
         function updateCanvasserMarker() {
@@ -1495,15 +1506,44 @@
                 iconAnchor: [12, 24]
             });
             
+            const latLng = [canvasserLocation.lat, canvasserLocation.lng];
             if (canvasserMarker) {
-                canvasserMarker.setLatLng([canvasserLocation.lat, canvasserLocation.lng]);
+                canvasserMarker.setLatLng(latLng);
             } else {
-                canvasserMarker = L.marker([canvasserLocation.lat, canvasserLocation.lng], {
+                canvasserMarker = L.marker(latLng, {
                     icon: customIcon
                 }).addTo(map);
             }
-            map.panTo([canvasserLocation.lat, canvasserLocation.lng]);
+            
+            // Update the proximity circle's position
+            if (proximityCircle) {
+                proximityCircle.setLatLng(latLng).addTo(map);
+            }
+            
+            map.panTo(latLng);
         }
+        
+        // Highlights the currently selected voter on the map
+        function updateCurrentVoterMarker(voter) {
+            // Remove previous marker if it exists
+            if (currentVoterMarker) {
+                map.removeLayer(currentVoterMarker);
+            }
+            
+            if (voter) {
+                const highlightIcon = L.divIcon({
+                    className: 'custom-div-icon',
+                    html: `<div style="text-align: center; color: #ffc107; font-size: 32px; animation: pulse 2s infinite;">
+                                <i class="fas fa-star"></i>
+                           </div>`,
+                    iconSize: [32, 32],
+                    iconAnchor: [16, 32]
+                });
+                currentVoterMarker = L.marker([voter.lat, voter.lng], { icon: highlightIcon }).addTo(map);
+                currentVoterMarker.bindPopup(`<b>Currently Selected:</b><br>${voter.name}<br>${voter.address}`).openPopup();
+            }
+        }
+
 
         function selectVoter(voterId) {
             if (currentVoter) {
@@ -1516,6 +1556,7 @@
             
             // Pan map to voter location
             map.panTo([currentVoter.lat, currentVoter.lng]);
+            updateCurrentVoterMarker(currentVoter);
 
             // Update UI and check proximity
             updateFieldAssignmentInfo(currentVoter);
@@ -1526,6 +1567,7 @@
             if (currentVoter) {
                 const prevCard = document.querySelector(`.voter-card[data-voter-id="${currentVoter.id}"]`);
                 if (prevCard) prevCard.classList.remove('current');
+                updateCurrentVoterMarker(null);
             }
             currentVoter = null;
             updateFieldAssignmentInfo(null);
